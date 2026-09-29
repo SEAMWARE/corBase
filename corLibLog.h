@@ -70,6 +70,35 @@ extern void corLibLogFallback
 
 // -----------------------------------------------------------------------------
 //
+// corLibTraceLevels - the executable's trace-level bitmask, NULL unless corBaseTraceLevelsSet()
+//
+// So that a trace which is off is decided INLINE: without it every COR_LIB_T is a call through
+// corLibLogFunction - a variadic one, arguments evaluated - only for the owner to answer "not
+// this level". In per-node code that is a measurable share of all the work done. NULL keeps the
+// old way: the log function decides.
+//
+extern const unsigned int* corLibTraceLevels;
+extern unsigned int        corLibTraceLevelWords;
+
+extern void corBaseTraceLevelsSet(const unsigned int* levelV, unsigned int words);
+
+static inline int corLibTraceOn(unsigned int level)
+{
+  if (corLibTraceLevels == NULL)
+    return 1;
+
+  unsigned int index = level / 32;
+
+  if (index >= corLibTraceLevelWords)
+    return 0;
+
+  return (corLibTraceLevels[index] & (1U << (level % 32))) != 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // COR_LIB_LOG - collect file, line and function, and hand the line to the owner
 //
 #define COR_LIB_LOG(type, aux, ...)                                                          \
@@ -91,7 +120,7 @@ do                                                                              
 #define COR_LIB_W(...)           COR_LIB_LOG('W', -1,     __VA_ARGS__)
 #define COR_LIB_I(...)           COR_LIB_LOG('I', -1,     __VA_ARGS__)
 #define COR_LIB_V(...)           COR_LIB_LOG('V', -1,     __VA_ARGS__)
-#define COR_LIB_T(tLevel, ...)   COR_LIB_LOG('T', tLevel, __VA_ARGS__)
+#define COR_LIB_T(tLevel, ...)   do { if (corLibTraceOn(tLevel)) COR_LIB_LOG('T', tLevel, __VA_ARGS__); } while (0)
 #define COR_LIB_X(eCode, ...)    do { COR_LIB_LOG('X', eCode, __VA_ARGS__); exit(eCode); } while (0)
 #define COR_LIB_RE(retVal, ...)  do { COR_LIB_LOG('E', -1,    __VA_ARGS__); return retVal; } while (0)
 #define COR_LIB_RVE(...)         do { COR_LIB_LOG('E', -1,    __VA_ARGS__); return;        } while (0)

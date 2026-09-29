@@ -10,7 +10,7 @@
 #ifndef CORBASE_CORBASEINIT_H_
 #define CORBASE_CORBASEINIT_H_
 
-#include "corBase/corLibLog.h"               // CorLibLogFunction
+#include "corBase/corLibLog.h"               // CorLibLogFunction, corBaseTraceLevelsSet
 
 
 
