@@ -46,6 +46,13 @@ LIB_SOURCES   = corBaseInit.c          \
                 corCpuCount.c
 
 BUILD        ?= debug
+
+#
+# Traces (COR_LIB_T) are compiled in for a debug build only - see corLibLog.h.
+#
+ifeq ($(BUILD),debug)
+CFLAGS       += -DCOR_T_ON
+endif
 OBJDIR        = obj/$(BUILD)
 OBJECTS       = $(LIB_SOURCES:%.c=$(OBJDIR)/%.o)
 DEPS          = $(OBJECTS:.o=.d) $(OBJDIR)/corBaseTest.d
