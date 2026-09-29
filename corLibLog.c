@@ -20,6 +20,8 @@
 // corLibLogFunction -
 //
 CorLibLogFunction corLibLogFunction = NULL;
+const unsigned int* corLibTraceLevels     = NULL;
+unsigned int        corLibTraceLevelWords = 0;
 
 
 
