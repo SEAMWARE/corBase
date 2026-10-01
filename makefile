@@ -37,6 +37,7 @@ LIB_SOURCES   = corBaseInit.c          \
                 corStringInArray.c     \
                 corStringSort.c        \
                 corTime.c              \
+                corTimeIso.c           \
                 corFileRead.c          \
                 corBaseVersion.c       \
                 corFloatTrim.c         \
