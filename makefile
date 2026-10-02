@@ -46,7 +46,8 @@ LIB_SOURCES   = corBaseInit.c          \
                 corStringReplace.c     \
                 corCpuCount.c          \
                 corFileReadInto.c      \
-                corMemoryLimit.c
+                corMemoryLimit.c       \
+                corCo.c
 
 BUILD        ?= debug
 
@@ -107,6 +108,17 @@ $(LIB_SO): $(OBJECTS)
 $(TEST): $(OBJDIR)/corBaseTest.o $(LIB)
 	$(CC) -o $@ $< $(LIB) $(TEST_LIBS)
 
+#
+# arm64-test - the smoke test built for aarch64 and run under QEMU (packages gcc-aarch64-linux-gnu and
+# qemu-user). Objects AND archive under obj/arm64: the top-level library is what every sibling links,
+# and an aarch64 one there breaks the next x86 build of all of them.
+#
+ARM64_CC      = aarch64-linux-gnu-gcc
+
+arm64-test:
+	$(MAKE) BUILD=arm64 CC=$(ARM64_CC) LIB=obj/arm64/libcorBase.a LIB_SO=obj/arm64/libcorBase.so obj/arm64/corBaseTest
+	qemu-aarch64 -L /usr/aarch64-linux-gnu obj/arm64/corBaseTest
+
 define TOOL_RULE
 $(OBJDIR)/tools/$(1): tools/$(1)/$(1).c $(OBJDIR)/.flags
 	@mkdir -p $(OBJDIR)/tools
@@ -132,6 +144,6 @@ clean:
 
 FORCE:
 
-.PHONY: all install di ci clean FORCE
+.PHONY: arm64-test all install di ci clean FORCE
 
 -include $(DEPS)
