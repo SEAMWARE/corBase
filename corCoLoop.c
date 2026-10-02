@@ -13,6 +13,9 @@
 #include <stdint.h>                     // uintptr_t
 #include <string.h>                     // memset
 #include <time.h>                       // clock_gettime
+#include <pthread.h>                    // pthread_create
+#include <unistd.h>                     // write, close
+#include <sys/eventfd.h>                // eventfd
 #include <sys/epoll.h>                  // epoll_ctl
 
 #include "corBase/corCo.h"              // corCoCurrent, corCoYield, corCoResume
@@ -249,4 +252,85 @@ void corCoLoopExpire(void)
     wP->ready = false;
     corCoLoopResume(wP->coP);
   }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// Blocking - one corCoBlocking call; on the coroutine's stack, which waits for the thread to finish
+//
+typedef struct Blocking
+{
+  void  (*fn)(void*);
+  void*   arg;
+  int     efd;
+} Blocking;
+
+static void* blockingThread(void* p)
+{
+  Blocking* bP  = (Blocking*) p;
+  uint64_t  one = 1;
+
+  bP->fn(bP->arg);
+  (void) !write(bP->efd, &one, sizeof(one));      // the last touch of *bP: the coroutine may free it now
+  return NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoBlocking -
+//
+void corCoBlocking(void (*fn)(void*), void* arg)
+{
+  if ((loopFd < 0) || (corCoCurrent() == NULL))
+  {
+    fn(arg);
+    return;
+  }
+
+  Blocking b = { fn, arg, eventfd(0, EFD_CLOEXEC) };
+
+  if (b.efd < 0)
+  {
+    fn(arg);
+    return;
+  }
+
+  pthread_t      tid;
+  pthread_attr_t attr;
+
+  pthread_attr_init(&attr);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  int r = pthread_create(&tid, &attr, blockingThread, &b);
+  pthread_attr_destroy(&attr);
+
+  if (r != 0)
+  {
+    close(b.efd);
+    fn(arg);
+    return;
+  }
+
+  //
+  // No limit: fn keeps its own. And b must outlive the thread's write - so a wait the loop could not
+  // take (-1) still waits, the plain way
+  //
+  short revents;
+  int   w;
+
+  while ((w = corCoLoopWait(b.efd, POLLIN, -1, &revents)) == 0)
+    ;
+
+  if (w < 0)
+  {
+    struct pollfd p = { b.efd, POLLIN, 0 };
+
+    while ((poll(&p, 1, -1) < 0) && (errno == EINTR))
+      ;
+  }
+
+  close(b.efd);
 }
