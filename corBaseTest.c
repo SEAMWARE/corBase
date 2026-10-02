@@ -16,9 +16,12 @@
 #include <time.h>                            // clock_gettime
 #include <unistd.h>                          // fork, _exit
 #include <sys/wait.h>                        // waitpid
+#include <sys/epoll.h>                       // epoll_create1, epoll_wait
+#include <poll.h>                            // POLLIN
 
 #include "corBase/corBaseInit.h"             // corBaseInit
 #include "corBase/corCo.h"                   // corCoCreate, corCoResume, corCoYield, ...
+#include "corBase/corCoLoop.h"               // corCoLoopInit, corCoLoopWait, ...
 #include "corBase/corLibLog.h"               // COR_LIB_*
 #include "corBase/corMacros.h"               // COR_FT, COR_VEC_SIZE
 #include "corBase/corStringSplit.h"          // corStringSplit
@@ -277,6 +280,69 @@ static void corCoTest(void)
 
 // -----------------------------------------------------------------------------
 //
+// corCoLoop - coroutines waiting on an epoll loop
+//
+static int  loopPipe[2];
+static int  loopGot[4];
+
+static void coReader(void* arg)
+{
+  (void) arg;
+  short revents = 0;
+  int   r       = corCoLoopWait(loopPipe[0], POLLIN, 2000, &revents);
+  char  c       = 0;
+
+  if (r == 1)
+    (void) !read(loopPipe[0], &c, 1);
+  loopGot[0] = r;
+  loopGot[1] = c;
+}
+
+static void coSleeper(void* arg)
+{
+  (void) arg;
+  double t0 = nowSeconds();
+  loopGot[2] = corCoLoopWait(-1, 0, 50, NULL);           // a timer: 0 when the time is up
+  loopGot[3] = (int) ((nowSeconds() - t0) * 1000);
+}
+
+static void corCoLoopTest(void)
+{
+  int efd = epoll_create1(0);
+
+  (void) !pipe(loopPipe);
+  corCoLoopInit(efd);
+
+  CorCo* readerP  = corCoCreate(coReader, NULL);
+  CorCo* sleeperP = corCoCreate(coSleeper, NULL);
+
+  corCoLoopResume(readerP);                              // both start, both yield at their wait
+  corCoLoopResume(sleeperP);
+
+  (void) !write(loopPipe[1], "x", 1);                    // the reader's socket becomes ready
+
+  struct epoll_event evV[8];
+  double             t0 = nowSeconds();
+
+  while ((nowSeconds() - t0) < 1.0)
+  {
+    int n = epoll_wait(efd, evV, 8, corCoLoopTimeoutMs());
+    for (int i = 0; i < n; i++)
+      corCoLoopEvent(evV[i].data.ptr, evV[i].events);
+    corCoLoopExpire();
+    if ((loopGot[0] != 0) && (loopGot[3] != 0))
+      break;
+  }
+
+  check((loopGot[0] == 1) && (loopGot[1] == 'x'), "corCoLoop: a coroutine waits for a socket, the loop resumes it when it is ready");
+  check((loopGot[2] == 0) && (loopGot[3] >= 45) && (loopGot[3] < 500), "corCoLoop: a timer wait (fd -1) - resumed when its time is up");
+  check(corCoLoopTimeoutMs() == -1, "corCoLoop: nothing left waiting");
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // logReturns - a function that returns through COR_LIB_RE
 //
 static int logReturns(int n)
@@ -321,6 +387,7 @@ int main(void)
   check(strcmp(COR_FT(true), "true") == 0 && strcmp(COR_FT(false), "false") == 0, "COR_FT");
 
   corCoTest();
+  corCoLoopTest();
 
   return (failures == 0)? 0 : 1;
 }

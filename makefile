@@ -47,7 +47,8 @@ LIB_SOURCES   = corBaseInit.c          \
                 corCpuCount.c          \
                 corFileReadInto.c      \
                 corMemoryLimit.c       \
-                corCo.c
+                corCo.c                \
+                corCoLoop.c
 
 BUILD        ?= debug
 
