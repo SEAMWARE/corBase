@@ -108,4 +108,19 @@ extern void corCoLoopResumeHookSet(void (*hook)(void));
 //
 extern void corCoBlocking(void (*fn)(void*), void* arg);
 
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoLoopPark / corCoLoopWake - a coroutine waits until another (of the same loop) wakes it
+//
+// corCoLoopPark: inside a coroutine of this thread's loop only; *handleP is set to what corCoLoopWake
+// takes, valid until Park returns (set it NULL then). Returns 1 woken, 0 the time ran out (timeoutMs;
+// < 0: no limit), -1 not in a coroutine of a loop.
+// corCoLoopWake: on the loop's thread - a coroutine of it, or the loop. The parked coroutine resumes
+// on the loop's next round, not inside the call. Waking twice is waking once.
+//
+extern int  corCoLoopPark(void** handleP, int timeoutMs);
+extern void corCoLoopWake(void* handle);
+
 #endif  // CORBASE_CORCOLOOP_H_

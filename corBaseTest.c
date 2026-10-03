@@ -402,6 +402,70 @@ static void corCoBlockingTest(void)
 
 // -----------------------------------------------------------------------------
 //
+// corCoLoopPark / Wake - a coroutine woken by another; one that nobody wakes times out
+//
+static void* parkHandle   = NULL;
+static int   parkResult   = -2;
+static int   parkMs       = 0;
+static int   parkTimeout  = -2;
+static int   parkTimeoutMs = 0;
+static double parkT0;
+
+static void coParker(void* arg)
+{
+  (void) arg;
+  parkResult = corCoLoopPark(&parkHandle, -1);
+  parkMs     = (int) ((nowSeconds() - parkT0) * 1000);
+}
+
+static void coWaker(void* arg)
+{
+  (void) arg;
+  corCoLoopWait(-1, 0, 30, NULL);
+  corCoLoopWake(parkHandle);
+  corCoLoopWake(parkHandle);                             // twice is once
+}
+
+static void coLonely(void* arg)
+{
+  (void) arg;
+  void* h = NULL;
+  parkTimeout   = corCoLoopPark(&h, 50);
+  parkTimeoutMs = (int) ((nowSeconds() - parkT0) * 1000);
+}
+
+static void corCoParkTest(void)
+{
+  int efd = epoll_create1(0);
+
+  corCoLoopInit(efd);
+  parkT0 = nowSeconds();
+
+  corCoLoopResume(corCoCreate(coParker, NULL));
+  corCoLoopResume(corCoCreate(coWaker,  NULL));
+  corCoLoopResume(corCoCreate(coLonely, NULL));
+
+  struct epoll_event evV[8];
+
+  while (((nowSeconds() - parkT0) < 2.0) && ((parkResult == -2) || (parkTimeout == -2)))
+  {
+    int n = epoll_wait(efd, evV, 8, corCoLoopTimeoutMs());
+    for (int i = 0; i < n; i++)
+      corCoLoopEvent(evV[i].data.ptr, evV[i].events);
+    corCoLoopExpire();
+  }
+
+  check((parkResult == 1) && (parkMs >= 28) && (parkMs < 200), "corCoLoopPark: woken by another coroutine (after its 30 ms timer)");
+  check((parkTimeout == 0) && (parkTimeoutMs >= 45) && (parkTimeoutMs < 300), "corCoLoopPark: nobody wakes it - its 50 ms run out");
+  check(corCoLoopPark(&parkHandle, 10) == -1, "corCoLoopPark: not in a coroutine - -1");
+  check(corCoLoopTimeoutMs() == -1, "corCoLoopPark: nothing left waiting");
+  close(efd);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // logReturns - a function that returns through COR_LIB_RE
 //
 static int logReturns(int n)
@@ -448,6 +512,7 @@ int main(void)
   corCoTest();
   corCoLoopTest();
   corCoBlockingTest();
+  corCoParkTest();
 
   return (failures == 0)? 0 : 1;
 }
