@@ -42,6 +42,7 @@ typedef struct CoWait
 
 static __thread int      loopFd   = -1;       // this thread's loop
 static __thread CoWait*  timed    = NULL;     // the waits with a deadline
+static __thread CoWait*  readyQ   = NULL;     // parked coroutines woken, to be resumed by the loop (LIFO - order is not promised)
 static void            (*resumeHook)(void) = NULL;
 
 
@@ -190,6 +191,9 @@ int corCoLoopWait(int fd, short events, int timeoutMs, short* reventsP)
 //
 int corCoLoopTimeoutMs(void)
 {
+  if (readyQ != NULL)
+    return 0;
+
   if (timed == NULL)
     return -1;
 
@@ -237,6 +241,18 @@ bool corCoLoopEvent(void* ptr, uint32_t events)
 //
 void corCoLoopExpire(void)
 {
+  //
+  // The woken first: each resumes in turn - and may wake others, which join the queue
+  //
+  while (readyQ != NULL)
+  {
+    CoWait* wP = readyQ;
+
+    readyQ   = wP->next;
+    wP->next = NULL;
+    corCoLoopResume(wP->coP);
+  }
+
   while (true)
   {
     long long now = nowMs();
@@ -333,4 +349,61 @@ void corCoBlocking(void (*fn)(void*), void* arg)
   }
 
   close(b.efd);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoLoopPark -
+//
+int corCoLoopPark(void** handleP, int timeoutMs)
+{
+  if ((loopFd < 0) || (corCoCurrent() == NULL))
+    return -1;
+
+  CoWait w;
+
+  memset(&w, 0, sizeof(w));
+  w.coP = corCoCurrent();
+  w.fd  = -1;
+
+  if (timeoutMs >= 0)
+  {
+    w.deadline = nowMs() + timeoutMs;
+    w.next     = timed;
+    if (timed != NULL)
+      timed->prev = &w;
+    timed = &w;
+  }
+
+  *handleP = &w;
+  corCoYield();
+  *handleP = NULL;
+
+  if (w.deadline != 0)
+    timedUnlink(&w);
+
+  return (w.ready == true) ? 1 : 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoLoopWake -
+//
+void corCoLoopWake(void* handle)
+{
+  CoWait* wP = (CoWait*) handle;
+
+  if ((wP == NULL) || (wP->ready == true))
+    return;
+
+  if (wP->deadline != 0)
+    timedUnlink(wP);
+
+  wP->ready = true;
+  wP->next  = readyQ;
+  readyQ    = wP;
 }
