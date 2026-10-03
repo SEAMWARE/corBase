@@ -94,4 +94,18 @@ extern void corCoLoopResume(void* coP);
 //
 extern void corCoLoopResumeHookSet(void (*hook)(void));
 
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoBlocking - fn(arg), which blocks in a library that knows nothing of the loop, without blocking it
+//
+// Inside a coroutine of this thread's loop: fn runs on a thread of its own while the coroutine waits
+// on an eventfd and the loop serves everything else; returns when fn has. Anywhere else (or with no
+// thread to be had): fn(arg), here. fn must not touch the caller's thread-bound state - it runs on
+// another thread - and whatever the caller had bound to its thread may have been rebound meanwhile
+// (corRest's corRestP: save it before, restore it after).
+//
+extern void corCoBlocking(void (*fn)(void*), void* arg);
+
 #endif  // CORBASE_CORCOLOOP_H_

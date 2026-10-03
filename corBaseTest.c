@@ -343,6 +343,65 @@ static void corCoLoopTest(void)
 
 // -----------------------------------------------------------------------------
 //
+// corCoBlocking - a blocking call on a thread of its own; the loop goes on meanwhile
+//
+static double blockT0;
+static int    blockDoneMs  = 0;                         // when the blocking call's coroutine resumed
+static int    blockTimerMs = 0;                         // when the other coroutine's 50 ms timer fired
+static int    blockRan     = 0;
+
+static void sleep200(void* arg)
+{
+  usleep(200 * 1000);
+  *(int*) arg += 1;
+}
+
+static void coBlocker(void* arg)
+{
+  (void) arg;
+  corCoBlocking(sleep200, &blockRan);
+  blockDoneMs = (int) ((nowSeconds() - blockT0) * 1000);
+}
+
+static void coTimer(void* arg)
+{
+  (void) arg;
+  corCoLoopWait(-1, 0, 50, NULL);
+  blockTimerMs = (int) ((nowSeconds() - blockT0) * 1000);
+}
+
+static void corCoBlockingTest(void)
+{
+  int efd = epoll_create1(0);
+
+  corCoLoopInit(efd);
+  blockT0 = nowSeconds();
+
+  corCoLoopResume(corCoCreate(coBlocker, NULL));
+  corCoLoopResume(corCoCreate(coTimer, NULL));
+
+  struct epoll_event evV[8];
+
+  while (((nowSeconds() - blockT0) < 2.0) && (blockDoneMs == 0))
+  {
+    int n = epoll_wait(efd, evV, 8, corCoLoopTimeoutMs());
+    for (int i = 0; i < n; i++)
+      corCoLoopEvent(evV[i].data.ptr, evV[i].events);
+    corCoLoopExpire();
+  }
+
+  check((blockRan == 1) && (blockDoneMs >= 195) && (blockDoneMs < 1000), "corCoBlocking: the call ran, and the coroutine resumed when it was done");
+  check((blockTimerMs >= 45) && (blockTimerMs < 150), "corCoBlocking: the loop went on meanwhile - another coroutine's 50 ms timer fired on time");
+
+  corCoBlocking(sleep200, &blockRan);                    // not in a coroutine: right here
+  check(blockRan == 2, "corCoBlocking: outside a coroutine, a plain call");
+  close(efd);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // logReturns - a function that returns through COR_LIB_RE
 //
 static int logReturns(int n)
@@ -388,6 +447,7 @@ int main(void)
 
   corCoTest();
   corCoLoopTest();
+  corCoBlockingTest();
 
   return (failures == 0)? 0 : 1;
 }
