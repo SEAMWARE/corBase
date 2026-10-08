@@ -124,8 +124,13 @@ do                                                                              
 // COR_LIB_T exists in a build that defines COR_T_ON (a debug build) and nowhere else - as corLog's
 // COR_T. Without it the trace is compiled away, its arguments still type-checked and used.
 //
+// Every object compiled with COR_T_ON carries the string "COR_T_ON:traces-compiled-in" (here and in
+// corLog.h), so a binary or an archive says whether it holds debug code: a release build must not,
+// and coraine's makefile fails a release link that does.
+//
 #ifdef COR_T_ON
 #define COR_LIB_T(tLevel, ...)   do { if (corLibTraceOn(tLevel)) COR_LIB_LOG('T', tLevel, __VA_ARGS__); } while (0)
+static const char corLibLogTracesCompiledIn[] __attribute__((used)) = "COR_T_ON:traces-compiled-in";
 #else
 #define COR_LIB_T(tLevel, ...)   do { if (0) COR_LIB_LOG('T', tLevel, __VA_ARGS__); } while (0)
 #endif
