@@ -9,6 +9,7 @@
 //
 // corCo - see corCo.h. The switch itself is the assembly block below - one per architecture.
 //
+#include <pthread.h>                    // pthread_key_create, pthread_once, pthread_setspecific
 #include <stdbool.h>                    // bool
 #include <stdint.h>                     // uintptr_t
 #include <stdlib.h>                     // malloc, free
@@ -248,12 +249,51 @@ static char* stackMap(void)
 
 // -----------------------------------------------------------------------------
 //
+// poolRelease - unmap and free the ending thread's pool (a pthread key destructor)
+//
+// The pool is thread-local: a thread that ends (an HTTP loop at shutdown) leaves it unreachable - up to
+// CORCO_POOL_MAX coroutines, each with its 256 KB stack mapped
+//
+static pthread_key_t  poolKey;
+static pthread_once_t poolKeyOnce = PTHREAD_ONCE_INIT;
+
+static void poolRelease(void* unused)
+{
+  (void) unused;
+
+  while (pool != NULL)
+  {
+    CorCo* coP = pool;
+
+    pool = coP->next;
+    munmap(coP->stackP, CORCO_STACK_SIZE);
+    free(coP);
+  }
+
+  poolSize = 0;
+}
+
+static void poolKeyCreate(void)
+{
+  pthread_key_create(&poolKey, poolRelease);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // coRelease - a coroutine done with: to the pool, or unmapped when the pool is full
 //
 static void coRelease(CorCo* coP)
 {
   if (poolSize < CORCO_POOL_MAX)
   {
+    if (pool == NULL)                                // the thread's first: its pool goes when the thread does
+    {
+      pthread_once(&poolKeyOnce, poolKeyCreate);
+      pthread_setspecific(poolKey, &pool);
+    }
+
     coP->next = pool;
     pool      = coP;
     poolSize += 1;
