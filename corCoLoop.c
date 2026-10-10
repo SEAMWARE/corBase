@@ -7,7 +7,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 //
-#include <errno.h>                      // errno, ENOENT
+#include <errno.h>                      // errno, ENOENT, ECANCELED
 #include <poll.h>                       // poll, POLLIN, POLLOUT
 #include <stdbool.h>                    // bool
 #include <stdint.h>                     // uintptr_t
@@ -33,9 +33,13 @@ typedef struct CoWait
   int             fd;
   short           revents;
   bool            ready;
+  bool            queued;          // on readyQ - woken or cancelled, to be resumed by the loop
+  bool            cancelled;       // corCoLoopCancel: resumed without what it waited for
   long long       deadline;        // CLOCK_MONOTONIC ms; 0: no limit
-  struct CoWait*  next;            // the loop's list of waits with a deadline
+  struct CoWait*  next;            // the loop's list of waits with a deadline - or readyQ
   struct CoWait*  prev;
+  struct CoWait*  allNext;         // every wait of the loop (waitsAll) - what corCoLoopCancel resumes
+  struct CoWait*  allPrev;
 } CoWait;
 
 #define CO_TAG ((uintptr_t) 1)
@@ -43,6 +47,8 @@ typedef struct CoWait
 static __thread int      loopFd   = -1;       // this thread's loop
 static __thread CoWait*  timed    = NULL;     // the waits with a deadline
 static __thread CoWait*  readyQ   = NULL;     // parked coroutines woken, to be resumed by the loop (LIFO - order is not promised)
+static __thread CoWait*  waitsAll = NULL;     // every coroutine of the loop that waits - a socket, time, a wake
+static __thread bool     cancelling = false;  // corCoLoopCancel: no wait of this loop waits any more
 static void            (*resumeHook)(void) = NULL;
 
 
@@ -73,6 +79,46 @@ static void timedUnlink(CoWait* wP)
   wP->next     = NULL;
   wP->prev     = NULL;
   wP->deadline = 0;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// allLink / allUnlink - a wait in / out of waitsAll
+//
+static void allLink(CoWait* wP)
+{
+  wP->allPrev = NULL;
+  wP->allNext = waitsAll;
+  if (waitsAll != NULL)
+    waitsAll->allPrev = wP;
+  waitsAll = wP;
+}
+
+static void allUnlink(CoWait* wP)
+{
+  if (wP->allPrev != NULL)    wP->allPrev->allNext = wP->allNext;
+  else if (waitsAll == wP)    waitsAll             = wP->allNext;
+  if (wP->allNext != NULL)    wP->allNext->allPrev = wP->allPrev;
+  wP->allNext = NULL;
+  wP->allPrev = NULL;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// readyQueue - a wait to be resumed by the loop's next corCoLoopExpire
+//
+static void readyQueue(CoWait* wP)
+{
+  if (wP->deadline != 0)
+    timedUnlink(wP);
+
+  wP->queued = true;
+  wP->next   = readyQ;
+  readyQ     = wP;
 }
 
 
@@ -136,6 +182,25 @@ int corCoLoopWait(int fd, short events, int timeoutMs, short* reventsP)
     return r;
   }
 
+  //
+  // Cancelled (corCoLoopCancel): what is ready already is taken, nothing is waited for. No yield - the
+  // caller fails at once, as on any wait that fails, instead of coming back here round after round.
+  //
+  if (cancelling == true)
+  {
+    struct pollfd p = { fd, events, 0 };
+
+    if ((fd >= 0) && (poll(&p, 1, 0) > 0))
+    {
+      if (reventsP != NULL)
+        *reventsP = p.revents;
+      return 1;
+    }
+
+    errno = ECANCELED;
+    return -1;
+  }
+
   CoWait w;
 
   memset(&w, 0, sizeof(w));
@@ -162,7 +227,9 @@ int corCoLoopWait(int fd, short events, int timeoutMs, short* reventsP)
     timed = &w;
   }
 
+  allLink(&w);
   corCoYield();
+  allUnlink(&w);
 
   if ((fd >= 0) && (w.ready == false))
   {
@@ -174,6 +241,12 @@ int corCoLoopWait(int fd, short events, int timeoutMs, short* reventsP)
 
   if (w.deadline != 0)
     timedUnlink(&w);
+
+  if (w.cancelled == true)
+  {
+    errno = ECANCELED;
+    return -1;
+  }
 
   if (w.ready == false)
     return 0;
@@ -368,6 +441,20 @@ int corCoLoopPark(void** handleP, int timeoutMs)
   w.coP = corCoCurrent();
   w.fd  = -1;
 
+  //
+  // Cancelled (corCoLoopCancel): resumed on the loop's next round, as if the time had run out. It does
+  // yield, unlike a cancelled corCoLoopWait: a coroutine parks to let ANOTHER one of the loop go on
+  // (whose turn it waits for), and that one has to run for it to get anywhere.
+  //
+  if (cancelling == true)
+  {
+    *handleP = &w;
+    readyQueue(&w);
+    corCoYield();
+    *handleP = NULL;
+    return 0;
+  }
+
   if (timeoutMs >= 0)
   {
     w.deadline = nowMs() + timeoutMs;
@@ -378,7 +465,9 @@ int corCoLoopPark(void** handleP, int timeoutMs)
   }
 
   *handleP = &w;
+  allLink(&w);
   corCoYield();
+  allUnlink(&w);
   *handleP = NULL;
 
   if (w.deadline != 0)
@@ -397,13 +486,40 @@ void corCoLoopWake(void* handle)
 {
   CoWait* wP = (CoWait*) handle;
 
-  if ((wP == NULL) || (wP->ready == true))
+  if ((wP == NULL) || (wP->ready == true) || (wP->queued == true))
     return;
 
-  if (wP->deadline != 0)
-    timedUnlink(wP);
-
   wP->ready = true;
-  wP->next  = readyQ;
-  readyQ    = wP;
+  readyQueue(wP);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoLoopCancel -
+//
+void corCoLoopCancel(void)
+{
+  cancelling = true;
+
+  for (CoWait* wP = waitsAll; wP != NULL; wP = wP->allNext)
+  {
+    if ((wP->ready == true) || (wP->queued == true))   // to be resumed already - with what it waited for
+      continue;
+
+    wP->cancelled = true;
+    readyQueue(wP);
+  }
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoLoopPending -
+//
+bool corCoLoopPending(void)
+{
+  return (readyQ != NULL) || (timed != NULL);
 }

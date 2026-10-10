@@ -45,8 +45,9 @@ extern void corCoLoopInit(int epollFd);
 // corCoLoopWait - inside a coroutine of this thread's loop: until fd is ready for events (POLLIN, POLLOUT)
 //
 // Returns as poll() on one fd does: 1 ready (*reventsP gets what for), 0 the time ran out (timeoutMs,
-// < 0: no limit), -1 an error. fd < 0: a plain timer. timeoutMs 0, or no loop on this thread, or not in
-// a coroutine: poll(). Never with a lock held - the coroutine yields.
+// < 0: no limit), -1 an error - errno ECANCELED: the loop is stopping (corCoLoopCancel), and the caller
+// is to give up what it waits for, not wait again. fd < 0: a plain timer. timeoutMs 0, or no loop on
+// this thread, or not in a coroutine: poll(). Never with a lock held - the coroutine yields.
 //
 extern int corCoLoopWait(int fd, short events, int timeoutMs, short* reventsP);
 
@@ -122,5 +123,29 @@ extern void corCoBlocking(void (*fn)(void*), void* arg);
 //
 extern int  corCoLoopPark(void** handleP, int timeoutMs);
 extern void corCoLoopWake(void* handle);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoLoopCancel - the loop is stopping: no coroutine of it waits for anything any more
+//
+// On the loop's thread, once its own epoll loop has ended. Every coroutine waiting in corCoLoopWait is
+// resumed with -1 (ECANCELED), every one parked (corCoLoopPark) with 0 - on the next corCoLoopExpire -
+// and from now on a wait does not wait: corCoLoopWait answers at once (1 if the fd is ready already, else
+// -1, ECANCELED), corCoLoopPark yields to the loop's next round and answers 0. So every coroutine runs
+// its failure path to its end, and frees what it holds.
+//
+// The loop then turns corCoLoopExpire while corCoLoopPending says there is something to resume.
+//
+extern void corCoLoopCancel(void);
+
+
+
+// -----------------------------------------------------------------------------
+//
+// corCoLoopPending - a coroutine of this loop is to be resumed (woken, cancelled, or waiting with a deadline)
+//
+extern bool corCoLoopPending(void);
 
 #endif  // CORBASE_CORCOLOOP_H_
