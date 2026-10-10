@@ -18,6 +18,7 @@
 #include <sys/wait.h>                        // waitpid
 #include <sys/epoll.h>                       // epoll_create1, epoll_wait
 #include <poll.h>                            // POLLIN
+#include <errno.h>                           // errno, ECANCELED
 
 #include "corBase/corBaseInit.h"             // corBaseInit
 #include "corBase/corCo.h"                   // corCoCreate, corCoResume, corCoYield, ...
@@ -467,6 +468,70 @@ static void corCoParkTest(void)
 
 // -----------------------------------------------------------------------------
 //
+// corCoLoopCancel - a stopping loop: every waiting coroutine resumed and ended, none waits again
+//
+// Last of the loop tests: a cancel is for good, on its thread.
+//
+static int    cancelWait     = -2;                       // a socket wait with no limit: -1, ECANCELED
+static int    cancelErrno    = 0;
+static int    cancelAgain    = -2;                       // a wait after the cancel: -1 at once
+static int    cancelReady    = -2;                       // ... unless the fd is ready already: 1
+static int    cancelPark     = -2;                       // parked with no limit: 0
+static int    cancelEnded    = 0;
+static int    cancelPipe[2];
+
+static void coCancelWaiter(void* arg)
+{
+  (void) arg;
+  cancelWait  = corCoLoopWait(cancelPipe[0], POLLIN, -1, NULL);
+  cancelErrno = errno;
+  cancelAgain = corCoLoopWait(cancelPipe[0], POLLIN, 5000, NULL);
+
+  (void) !write(cancelPipe[1], "x", 1);
+  cancelReady = corCoLoopWait(cancelPipe[0], POLLIN, 5000, NULL);
+  cancelEnded += 1;
+}
+
+static void coCancelParker(void* arg)
+{
+  (void) arg;
+  void* h = NULL;
+  cancelPark   = corCoLoopPark(&h, -1);
+  cancelEnded += 1;
+}
+
+static void corCoLoopCancelTest(void)
+{
+  int efd = epoll_create1(0);
+
+  (void) !pipe(cancelPipe);
+  corCoLoopInit(efd);
+
+  corCoLoopResume(corCoCreate(coCancelWaiter, NULL));    // both wait with no limit - for nothing that comes
+  corCoLoopResume(corCoCreate(coCancelParker, NULL));
+
+  check(corCoLoopPending() == false, "corCoLoopCancel: before it, two waits with no deadline - nothing to resume");
+
+  double t0 = nowSeconds();
+
+  corCoLoopCancel();
+  while (corCoLoopPending() == true)
+    corCoLoopExpire();
+
+  int ms = (int) ((nowSeconds() - t0) * 1000);
+
+  check((cancelWait == -1) && (cancelErrno == ECANCELED), "corCoLoopCancel: a coroutine waiting for a socket is resumed with -1, ECANCELED");
+  check(cancelAgain == -1, "corCoLoopCancel: a wait after it fails at once");
+  check(cancelReady == 1, "corCoLoopCancel: ... unless what it waits for is ready already");
+  check(cancelPark == 0, "corCoLoopCancel: a parked coroutine is resumed with 0");
+  check((cancelEnded == 2) && (ms < 100), "corCoLoopCancel: both coroutines ran to their end, at once");
+  close(efd);
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // logReturns - a function that returns through COR_LIB_RE
 //
 static int logReturns(int n)
@@ -521,6 +586,7 @@ int main(void)
   corCoLoopTest();
   corCoBlockingTest();
   corCoParkTest();
+  corCoLoopCancelTest();                                 // the last loop test: a cancel is for good
 
   return (failures == 0)? 0 : 1;
 }
