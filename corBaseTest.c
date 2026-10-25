@@ -19,12 +19,14 @@
 #include <sys/epoll.h>                       // epoll_create1, epoll_wait
 #include <poll.h>                            // POLLIN
 #include <errno.h>                           // errno, ECANCELED
+#include <sys/stat.h>                        // fstat, stat
 
 #include "corBase/corBaseInit.h"             // corBaseInit
 #include "corBase/corCo.h"                   // corCoCreate, corCoResume, corCoYield, ...
 #include "corBase/corCoLoop.h"
 #include "corBase/corCrc32c.h"               // corCoLoopInit, corCoLoopWait, ...
-#include "corBase/corLibLog.h"               // COR_LIB_*
+#include "corBase/corDaemonize.h"            // corDaemonize
+#include "corBase/corLibLog.h"            // COR_LIB_*
 #include "corBase/corMacros.h"               // COR_FT, COR_VEC_SIZE
 #include "corBase/corStringSplit.h"          // corStringSplit
 #include "corBase/version.h"                 // CORBASE_VERSION
@@ -543,6 +545,61 @@ static int logReturns(int n)
 
 // -----------------------------------------------------------------------------
 //
+// corDaemonizeTest - a child calls corDaemonize: it (the daemon's parent) exits 0 at once, and the
+// daemon reports over a pipe - a session of its own, cwd /, stdout on /dev/null
+//
+static void corDaemonizeTest(void)
+{
+  int fdV[2];
+
+  if (pipe(fdV) != 0)
+  {
+    check(false, "corDaemonize: pipe");
+    return;
+  }
+
+  fflush(NULL);                                          // this fork's own: the child would write our buffers again
+
+  pid_t child = fork();
+
+  if (child == 0)
+  {
+    close(fdV[0]);
+
+    if (corDaemonize() != 0)
+      _exit(2);
+
+    char        cwd[8] = { 0 };
+    struct stat out;
+    struct stat devNull;
+    char        report[3];
+
+    report[0] = (getsid(0) == getpid()) ? 's' : '-';
+    report[1] = ((getcwd(cwd, sizeof(cwd)) != NULL) && (strcmp(cwd, "/") == 0)) ? 'c' : '-';
+    report[2] = ((fstat(1, &out) == 0) && (stat("/dev/null", &devNull) == 0) && (out.st_rdev == devNull.st_rdev)) ? 'n' : '-';
+
+    if (write(fdV[1], report, sizeof(report)) != (ssize_t) sizeof(report))
+      _exit(3);
+    _exit(0);
+  }
+
+  close(fdV[1]);
+
+  int status = -1;
+  waitpid(child, &status, 0);
+  check(WIFEXITED(status) && (WEXITSTATUS(status) == 0), "corDaemonize: the parent exits 0");
+
+  char    report[4] = { 0 };
+  ssize_t nb        = read(fdV[0], report, 3);   // EOF only when the daemon has written or ended
+  close(fdV[0]);
+
+  check((nb == 3) && (strcmp(report, "scn") == 0), "corDaemonize: the daemon has a session of its own, cwd /, stdout on /dev/null");
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
 // main -
 //
 int main(void)
@@ -587,6 +644,7 @@ int main(void)
   corCoBlockingTest();
   corCoParkTest();
   corCoLoopCancelTest();                                 // the last loop test: a cancel is for good
+  corDaemonizeTest();
 
   return (failures == 0)? 0 : 1;
 }
