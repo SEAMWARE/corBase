@@ -30,6 +30,8 @@
 #include "corBase/corMacros.h"               // COR_FT, COR_VEC_SIZE
 #include "corBase/corSizeText.h"             // corSizeText
 #include "corBase/corStringSplit.h"          // corStringSplit
+#include "corBase/corUriPasswordMask.h"      // corUriPasswordMask
+#include "corBase/corHeaderIsCredential.h"   // corHeaderIsCredential
 #include "corBase/version.h"                 // CORBASE_VERSION
 
 
@@ -647,6 +649,17 @@ int main(void)
   check(strcmp(corSizeText(64 * 1024, sizeBuf, sizeof(sizeBuf)), "64 KiB") == 0, "corSizeText: 64 KiB, not 0 MiB");
   check(strcmp(corSizeText(512, sizeBuf, sizeof(sizeBuf)), "512 B") == 0, "corSizeText: 512 B");
   check(strcmp(corSizeText(0, sizeBuf, sizeof(sizeBuf)), "0 B") == 0, "corSizeText: 0 B");
+  char masked[64];
+  check(strcmp(corUriPasswordMask("mongodb://u:s3cret@localhost:27017", masked, sizeof(masked)), "mongodb://u:***@localhost:27017") == 0, "corUriPasswordMask: user:password@");
+  check(strcmp(corUriPasswordMask("http://u:p@ss/w@h/x?a=b@c", masked, sizeof(masked)), "http://u:***@h/x?a=b@c") == 0, "corUriPasswordMask: an '@' and a '/' in the password, an '@' in the query");
+  check(strcmp(corUriPasswordMask("http://u@h:80/x", masked, sizeof(masked)), "http://u@h:80/x") == 0, "corUriPasswordMask: a user without a password - as it is");
+  check(strcmp(corUriPasswordMask("mongodb://h1:1,h2:2/db", masked, sizeof(masked)), "mongodb://h1:1,h2:2/db") == 0, "corUriPasswordMask: no user information - as it is");
+  check(strcmp(corUriPasswordMask("mongodb://u:s3cret@localhost", masked, 12), "mongodb://u") == 0, "corUriPasswordMask: cut to the buffer");
+  check(strcmp(corUriPasswordMask("u:p@proxy:3128", masked, sizeof(masked)), "u:***@proxy:3128") == 0, "corUriPasswordMask: no scheme");
+  check(strcmp(corUriPasswordMask(NULL, masked, sizeof(masked)), "") == 0, "corUriPasswordMask: NULL");
+
+  check(corHeaderIsCredential("Authorization") && corHeaderIsCredential("fiware-token") && corHeaderIsCredential("SET-COOKIE"), "corHeaderIsCredential: any case");
+  check(!corHeaderIsCredential("Content-Type") && !corHeaderIsCredential("Authorizatio") && !corHeaderIsCredential("Authorizations") && !corHeaderIsCredential(NULL), "corHeaderIsCredential: not a prefix, not another header");
 
   corCoTest();
   corCoLoopTest();
