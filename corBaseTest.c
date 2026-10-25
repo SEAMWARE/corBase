@@ -26,6 +26,7 @@
 #include "corBase/corCrc32c.h"               // corCoLoopInit, corCoLoopWait, ...
 #include "corBase/corLibLog.h"               // COR_LIB_*
 #include "corBase/corMacros.h"               // COR_FT, COR_VEC_SIZE
+#include "corBase/corSizeText.h"             // corSizeText
 #include "corBase/corStringSplit.h"          // corStringSplit
 #include "corBase/version.h"                 // CORBASE_VERSION
 
@@ -581,6 +582,14 @@ int main(void)
   for (int i = 0; i < 1000; i++) big[i] = (char) (i * 7);
   uint32_t whole = corCrc32c(0, big, 1000);
   check((whole == corCrc32c(corCrc32c(0, big, 333), big + 333, 667)) && (whole != corCrc32c(0, big, 999)), "corCrc32c: 1000 bytes, split anywhere - and one byte less differs");
+
+  char sizeBuf[32];
+  check(strcmp(corSizeText(64 * 1024 * 1024, sizeBuf, sizeof(sizeBuf)), "64 MiB") == 0, "corSizeText: 64 MiB");
+  check(strcmp(corSizeText(4096ULL << 20, sizeBuf, sizeof(sizeBuf)), "4096 MiB") == 0, "corSizeText: 4 GiB is 4096 MiB");
+  check(strcmp(corSizeText((1 << 20) + (1 << 19), sizeBuf, sizeof(sizeBuf)), "1 MiB") == 0, "corSizeText: 1.5 MiB rounded down");
+  check(strcmp(corSizeText(64 * 1024, sizeBuf, sizeof(sizeBuf)), "64 KiB") == 0, "corSizeText: 64 KiB, not 0 MiB");
+  check(strcmp(corSizeText(512, sizeBuf, sizeof(sizeBuf)), "512 B") == 0, "corSizeText: 512 B");
+  check(strcmp(corSizeText(0, sizeBuf, sizeof(sizeBuf)), "0 B") == 0, "corSizeText: 0 B");
 
   corCoTest();
   corCoLoopTest();
