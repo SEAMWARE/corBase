@@ -47,6 +47,7 @@ LIB_SOURCES   = corBaseInit.c          \
                 corCpuCount.c          \
                 corFileReadInto.c      \
                 corMemoryLimit.c       \
+                corSizeText.c          \
                 corCo.c                \
                 corCoLoop.c            \
                 corCrc32c.c            \
