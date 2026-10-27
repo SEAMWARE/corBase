@@ -183,6 +183,91 @@ void corTimeAccumulate(struct timespec* accumulatedP, struct timespec* partP, fl
 
 Adds timespec to accumulator. Useful for measuring total elapsed time.
 
+#### corTimeIso
+
+```c
+int corTimeIso(int64_t nsec, int fracDigits, bool trim, char* buf);
+```
+
+Epoch nanoseconds as ISO 8601 UTC, `YYYY-MM-DDTHH:MM:SS[.f...]Z`. `fracDigits` (0-9) fraction digits
+are kept, the rest truncated; `trim` drops trailing zeros; a zero fraction is left out, `.` included.
+`buf` holds 31 bytes. Returns the length.
+
+### More String and File Functions
+
+```c
+bool  corStringInArray(const char* s, char** v);                     // corStringInArray.h - v NULL-terminated; false on NULL input
+char* corSizeText(uint64_t bytes, char* buf, int bufSize);           // corSizeText.h - "4096 MiB", "64 KiB", "512 B": whole units, rounded down, up to MiB
+int   corFileReadInto(const char* path, char* buf, int bufSize);     // corFileReadInto.h - a small file (/proc, /sys) into buf, NUL-terminated; bytes read or -1
+uint32_t corCrc32c(uint32_t crc, const void* buf, size_t len);       // corCrc32c.h - CRC-32C, from crc (0 to start); the CPU instruction where there is one
+```
+
+### Credentials in Logs
+
+```c
+bool  corHeaderIsCredential(const char* name);                       // corHeaderIsCredential.h
+char* corUriPasswordMask(const char* uri, char* buf, int bufSize);   // corUriPasswordMask.h
+```
+
+`corHeaderIsCredential` is true for Authorization, Proxy-Authorization, Cookie, Set-Cookie, X-Auth-Token
+and Fiware-Token, in any case. It allocates nothing and calls no library function, so a signal handler may
+call it. `corUriPasswordMask` writes the URI with its password as `***`
+(`mongodb://user:***@host:27017/`); a URI without a password is copied as it is, `NULL` is `""`, the
+result is cut to `bufSize - 1` bytes. Returns `buf`.
+
+### Process
+
+```c
+int      corCpuCount(void);       // corCpuCount.h - the CPUs this process may run on: affinity mask and cgroup CPU quota, at least 1
+uint64_t corMemoryLimit(void);    // corMemoryLimit.h - the cgroup memory limit in bytes (the smallest on the way to the root), 0: none
+int      corDaemonize(void);      // corDaemonize.h - fork, setsid, chdir("/"), stdio on /dev/null
+```
+
+`corDaemonize` returns 0 in the detached process and -1 if a step failed; the parent exits (0). Call it
+before the first thread is created - a fork copies only the calling thread.
+
+### Coroutines (corCo.h, corCoLoop.h)
+
+A coroutine runs a function on a stack of its own and can stop half way and be resumed later, on the
+thread that created it. Each stack is 256 KiB of address space (`MAP_NORESERVE`, a guard page below it),
+from a per-thread pool. The switch saves the callee-saved registers and the stack pointer (x86-64 and
+aarch64).
+
+```c
+CorCo* corCoCreate(CorCoFunction fn, void* arg);   // not run yet; NULL when out of memory
+bool   corCoResume(CorCo* coP);                    // until it yields or ends; true when it ended (coP is gone)
+void   corCoYield(void);                           // back to whoever resumed it; outside a coroutine: nothing
+CorCo* corCoCurrent(void);                         // NULL on the thread's own stack
+void   corCoDestroy(CorCo* coP);                   // one that will never be resumed
+void   corCoUserDataSet(CorCo* coP, void* dataP);
+void*  corCoUserData(CorCo* coP);
+size_t corCoStackSize(void);
+```
+
+`corCoLoop` runs coroutines on an epoll loop: a coroutine waiting for a socket hands it to the loop's
+epoll and yields, and the loop resumes it when the socket is ready or its time is up.
+
+```c
+// The loop's side
+void corCoLoopInit(int epollFd);                     // once, on the loop's thread
+int  corCoLoopTimeoutMs(void);                       // the epoll_wait timeout: the nearest deadline, -1 none
+bool corCoLoopEvent(void* ptr, uint32_t events);     // every event: true if it was a waiting coroutine's
+void corCoLoopExpire(void);                          // after the events: the coroutines whose time is up
+void corCoLoopResume(void* coP);
+void corCoLoopResumeHookSet(void (*hook)(void));     // called each time a coroutine gives control back
+void corCoLoopCancel(void);                          // the loop is stopping: every wait ends
+bool corCoLoopPending(void);                         // a coroutine is still to be resumed
+
+// The coroutine's side
+int  corCoLoopWait(int fd, short events, int timeoutMs, short* reventsP);   // as poll() on one fd; -1 ECANCELED: the loop is stopping
+int  corCoLoopPark(void** handleP, int timeoutMs);   // 1 woken, 0 timed out, -1 not in a loop's coroutine
+void corCoLoopWake(void* handle);                    // on the loop's thread; twice is once
+void corCoBlocking(void (*fn)(void*), void* arg);    // fn on a thread of its own while the loop goes on
+```
+
+Never wait or yield with a lock held: another coroutine of the thread that wants the lock would wait for
+ever. coraine's doc/coroutines.md describes how the broker uses them.
+
 ### Error Handling
 
 #### Data Structures
@@ -194,13 +279,15 @@ typedef struct CorErrorItem {
     const char* function;
     int         code;
     const char* title;
+    const char* where;
     const char* detail;
 } CorErrorItem;
 
 typedef struct CorErrorStack {
     CorErrorItem* errorV;
     int         errorSize;
-    int         ix;
+    int         ix;            // current index in errorV
+    int         errorCounter;  // the number of error stacks produced
 } CorErrorStack;
 ```
 
@@ -208,7 +295,7 @@ typedef struct CorErrorStack {
 
 ```c
 void corErrorInit(CorErrorStack* esP, int maxErrorItems);
-void corErrorPush(CorErrorStack* esP, int code, const char* title, const char* detail);
+corErrorPush(esP, code, title, where, detail);   // a macro: corErrorPushFunction with __FILE__, __LINE__, __FUNCTION__
 void corErrorFlushToScreen(CorErrorStack* esP);
 void corErrorFree(CorErrorStack* esP);
 ```
@@ -245,8 +332,8 @@ go to stderr (option parsing runs before any log file exists, and its errors mus
 still be seen), everything else is dropped.
 
 **Trace levels** are the executable's number space, shared by every library: each
-library takes its own hundred (corRest 100-199, corNgsild 200-299, corAlloc 300-399;
-coraine's own start at 400).
+library takes its own range (corJson and corTree 50-66, corRest 100-149, corJsonld 150-199,
+corNgsild 200-240, corAlloc 300-303; coraine's own start at 400).
 
 ## Building
 
