@@ -155,6 +155,7 @@ void corFloatTrim(char* floatString, double d);
 ```
 
 Converts double to string, removes trailing zeros. "14.12300" becomes "14.123".
+inf, -inf and NaN have no JSON rendering and become "null".
 
 ### Time Functions
 

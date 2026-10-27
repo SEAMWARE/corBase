@@ -15,7 +15,7 @@
 
 // -----------------------------------------------------------------------------
 //
-// corFloatTrim - remove trailing zeroes in decimal part
+// corFloatTrim - remove trailing zeroes in decimal part; inf and NaN are rendered "null"
 //
 extern void corFloatTrim(char* floatString, double d);
 

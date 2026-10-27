@@ -20,12 +20,14 @@
 #include <poll.h>                            // POLLIN
 #include <errno.h>                           // errno, ECANCELED
 #include <sys/stat.h>                        // fstat, stat
+#include <math.h>                            // INFINITY, NAN
 
 #include "corBase/corBaseInit.h"             // corBaseInit
 #include "corBase/corCo.h"                   // corCoCreate, corCoResume, corCoYield, ...
 #include "corBase/corCoLoop.h"
 #include "corBase/corCrc32c.h"               // corCoLoopInit, corCoLoopWait, ...
 #include "corBase/corDaemonize.h"            // corDaemonize
+#include "corBase/corFloatTrim.h"            // corFloatTrim
 #include "corBase/corLibLog.h"            // COR_LIB_*
 #include "corBase/corMacros.h"               // COR_FT, COR_VEC_SIZE
 #include "corBase/corSizeText.h"             // corSizeText
@@ -636,6 +638,12 @@ int main(void)
   check(strcmp(COR_FT(true), "true") == 0 && strcmp(COR_FT(false), "false") == 0, "COR_FT");
 
   check(corCrc32c(0, "123456789", 9) == 0xE3069283, "corCrc32c: the check value of CRC-32C");
+
+  char ft[32];
+  corFloatTrim(ft, 14.123);     check(strcmp(ft, "14.123") == 0, "corFloatTrim: trailing zeroes dropped");
+  corFloatTrim(ft, INFINITY);   check(strcmp(ft, "null") == 0,   "corFloatTrim: inf is null");
+  corFloatTrim(ft, -INFINITY);  check(strcmp(ft, "null") == 0,   "corFloatTrim: -inf is null");
+  corFloatTrim(ft, NAN);        check(strcmp(ft, "null") == 0,   "corFloatTrim: NaN is null");
   check(corCrc32c(corCrc32c(0, "1234", 4), "56789", 5) == 0xE3069283, "corCrc32c: in two pieces, the same");
   char big[1000];
   for (int i = 0; i < 1000; i++) big[i] = (char) (i * 7);
