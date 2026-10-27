@@ -9,7 +9,8 @@
 //
 #include <stdio.h>                           // snprintf
 #include <stdlib.h>                          // strtod
-#include <math.h>                            // trunc, fabs
+#include <math.h>                            // trunc, fabs, isfinite
+#include <string.h>                          // strcpy
 
 #include <stdbool.h>                         // bool
 #include "corBase/corFloatTrim.h"            // Own interface
@@ -47,6 +48,16 @@ static void shortestRoundTrip(char* floatString, double d)
 //
 void corFloatTrim(char* floatString, double d)
 {
+  //
+  // 0. inf and NaN have no JSON rendering - "null", as JavaScript's JSON.stringify
+  //    (printf would write "inf"/"nan", which no JSON parser reads)
+  //
+  if (!isfinite(d))
+  {
+    strcpy(floatString, "null");
+    return;
+  }
+
   //
   // 1. Is there a decimal part?
   //
